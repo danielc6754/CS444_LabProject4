@@ -57,7 +57,10 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/syscalls.h>
 #include <linux/slab.h>
+
+#include <linux/linkage.h>
 
 #include <linux/mm.h>
 #include <linux/swap.h> /* struct reclaim_state */
@@ -86,9 +89,6 @@ typedef s16 slobidx_t;
 #else
 typedef s32 slobidx_t;
 #endif
-
-//For keeping track of free memory across the whole algo
-long total_free;
 
 struct slob_block {
 	slobidx_t units;
@@ -661,15 +661,29 @@ long add_free_memory(void){
 	
 	}
 
-	total_free = free_mem;
+	slob_list = &free_slob_medium;
+
+	list_for_each_entry(sp, slob_list, list){
+
+		free_mem = free_mem + sp->units;	
+	
+	}
+
+	slob_list = &free_slob_large;
+
+	list_for_each_entry(sp, slob_list, list){
+
+		free_mem = free_mem + sp->units;	
+	
+	}
+
 	spin_unlock_irqrestore(&slob_lock, flags);
 
-	return total_free;
+	return free_mem;
 }
 
-asmlinkage long sys_slob_memory_claimed(void)
+asmlinkage long sys_slob_memory_free(void)
 {
 	long free_mem = add_free_memory();
-
 	return free_mem;
 }
