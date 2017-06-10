@@ -214,23 +214,123 @@ static void slob_free_pages(void *b, int order)
 	free_pages((unsigned long)b, order);
 }
 
+long slob_check_page( struct page *sp, size_t size, int align )
+{
+	slob_t *cur, *prev, *aligned = NULL;
+	int units = SLOB_UNITS( size );
+	int delta = 0;
+	long tempDifference;
+	long difference = -1;
+
+	slob_t* assigned_yet = NULL;
+
+	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur))
+	{
+
+		slobidx_t avail = slob_units( cur );
+
+		if( align ){
+			aligned = (slob_t*)ALIGN( (unsigned long)cur, align);
+			delta = aligned - cur;
+		}
+
+
+		tempDifference = avail - ( units + delta );
+
+		if( ( ( tempDifference < difference ) && tempDifference >= 0 ) || ( assigned_yet == NULL && tempDifference >= 0 ) ){
+
+			difference = tempDifference;
+			assigned_yet = cur;
+			
+		}
+
+		
+		if( slob_last( cur ) && assigned_yet == NULL ){
+			
+	   		return -1;
+		
+		}else if( slob_last( cur ) ){
+			
+			//printk( "\nTHE BEST DIFFERENCE IS: %ld\n", difference );
+	   		return difference;
+		
+		}
+		
+	}
+
+}
+
 /*
  * Allocate a slob block within a given slob_page sp.
  */
 static void *slob_page_alloc(struct page *sp, size_t size, int align)
 {
 	slob_t *prev, *cur, *aligned = NULL;
+	slob_t *best_prev = NULL;
 	int delta = 0, units = SLOB_UNITS(size);
+	slobidx_t avail;
+	slob_t *next;
 
-	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
-		slobidx_t avail = slob_units(cur);
+	long tempDifference;
+	long difference = -1;
+
+	slob_t* best_slob = NULL;
+
+	if( sp == NULL ){
+
+   		return NULL;	   
+	
+	}
+
+	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur))
+	{
+
+		avail = slob_units( cur );
+
+		if( align ){
+			aligned = (slob_t*)ALIGN( (unsigned long)cur, align);
+			delta = aligned - cur;
+		}
+
+		tempDifference = avail - ( units + delta );
+
+		if (avail >= units + delta && (best_slob == NULL || avail - (units + delta) < difference ) ){
+		//if( ( ( tempDifference < difference ) && tempDifference >= 0 ) || ( best_slob == NULL && tempDifference >= 0 ) ){
+
+			difference = tempDifference;
+			best_slob = cur;
+			best_prev = prev;
+
+		}
+
+		if( slob_last( cur ) ){
+
+		       if( best_slob == NULL ){
+		      
+				return NULL;
+
+		       }else{
+		       
+				break; 
+		       
+		       }
+		
+		}
+	
+	}
+
+	cur = best_slob;
+	prev = best_prev;
+	avail = slob_units( cur );
+
+	//for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
+	//	slobidx_t avail = slob_units(cur);
 
 		if (align) {
 			aligned = (slob_t *)ALIGN((unsigned long)cur, align);
 			delta = aligned - cur;
 		}
-		if (avail >= units + delta) { /* room enough? */
-			slob_t *next;
+		//if (avail >= units + delta) { /* room enough? */
 
 			if (delta) { /* need to fragment head to align? */
 				next = slob_next(cur);
@@ -259,10 +359,11 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 			if (!sp->units)
 				clear_slob_page_free(sp);
 			return cur;
-		}
-		if (slob_last(cur))
-			return NULL;
-	}
+		//}
+		//if (slob_last(cur))
+		//	return NULL;
+	//}
+
 }
 
 /*
@@ -271,10 +372,12 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 {
 	struct page *sp;
+	struct page *best_page = NULL;
 	struct list_head *prev;
 	struct list_head *slob_list;
 	slob_t *b = NULL;
 	unsigned long flags;
+	long temp_size, current_size = -1;
 
 	if (size < SLOB_BREAK1)
 		slob_list = &free_slob_small;
@@ -294,24 +397,48 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 		if (node != NUMA_NO_NODE && page_to_nid(sp) != node)
 			continue;
 #endif
-		/* Enough room on this page? */
 		if (sp->units < SLOB_UNITS(size))
-			continue;
+   			continue;
 
+	   	temp_size = slob_check_page( sp, size, align );	   
+		if( temp_size >= 0 ){
+			if( temp_size < current_size || current_size == -1 ){
+		/* Enough room on this page? */
+		//if (sp->units < SLOB_UNITS(size))
+		
+	   			current_size = temp_size;	   
+				best_page = sp;
+	
+		
+			}else{
+
+				continue;
+		
+			}
+
+		}else{
+	
+	   		continue; 
+		
+		}
+
+	}
+
+	
 		/* Attempt to alloc */
 		prev = sp->list.prev;
-		b = slob_page_alloc(sp, size, align);
-		if (!b)
-			continue;
+		b = slob_page_alloc(best_page, size, align);
+		//if (!b)
+		//	continue;
 
 		/* Improve fragment distribution and reduce our average
 		 * search time by starting our next search here. (see
 		 * Knuth vol 1, sec 2.5, pg 449) */
-		if (prev != slob_list->prev &&
-				slob_list->next != prev->next)
-			list_move_tail(slob_list, prev->next);
-		break;
-	}
+		//if (prev != slob_list->prev &&
+		//		slob_list->next != prev->next)
+		//	list_move_tail(slob_list, prev->next);
+		//break;
+	
 	spin_unlock_irqrestore(&slob_lock, flags);
 
 	/* Not enough space: must allocate a new page */
